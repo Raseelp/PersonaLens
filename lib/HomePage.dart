@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:google_ml_kit/google_ml_kit.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:photo_manager/photo_manager.dart';
 
@@ -11,12 +12,25 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   List<AssetEntity> _assets = [];
+  Map<int, List<Rect>> _faceBoxes =
+      {}; // To store bounding boxes for each image
+
+  late FaceDetector _faceDetector;
 
   @override
   void initState() {
     super.initState();
-
+    _initializeFaceDetector();
     _fetchImages();
+  }
+
+  void _initializeFaceDetector() {
+    _faceDetector = GoogleMlKit.vision.faceDetector(
+      FaceDetectorOptions(
+        enableContours: false,
+        enableLandmarks: false,
+      ),
+    );
   }
 
   // Fetch images from the gallery
@@ -30,15 +44,52 @@ class _HomePageState extends State<HomePage> {
         type: RequestType.image,
       ).then((value) => value[0]
           .getAssetListPaged(page: 0, size: 100)); // Get first 100 images
+      List<AssetEntity> filteredAssets = [];
+
+      for (var asset in assets) {
+        final inputImage = await _convertToInputImage(asset);
+        if (inputImage != null) {
+          final faces = await _detectFaces(inputImage);
+          if (faces.isNotEmpty) {
+            filteredAssets.add(asset); // Add asset only if faces are detected
+          }
+        }
+      }
+
       setState(() {
-        _assets = assets;
+        _assets = filteredAssets; // Update state with filtered assets
       });
+
+      print("Filtered assets with faces: ${filteredAssets.length}");
     } else {
       // Handle the case if permission is not granted
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Fetching Failed')),
       );
     }
+  }
+
+  Future<InputImage?> _convertToInputImage(AssetEntity asset) async {
+    final file = await asset.file;
+    if (file != null) {
+      return InputImage.fromFilePath(file.path);
+    }
+    return null;
+  }
+
+  Future<List<Face>> _detectFaces(InputImage inputImage) async {
+    try {
+      return await _faceDetector.processImage(inputImage);
+    } catch (e) {
+      print("Error detecting faces: $e");
+      return [];
+    }
+  }
+
+  @override
+  void dispose() {
+    _faceDetector.close();
+    super.dispose();
   }
 
   @override
@@ -58,7 +109,7 @@ class _HomePageState extends State<HomePage> {
               itemCount: _assets.length,
               itemBuilder: (context, index) {
                 return FutureBuilder<Widget>(
-                  future: _loadImage(_assets[index]),
+                  future: _loadImageWithBoundingBox(_assets[index], index),
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.done) {
                       return snapshot.data!;
@@ -72,9 +123,29 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // Load image from AssetEntity
-  Future<Widget> _loadImage(AssetEntity asset) async {
+  Future<Widget> _loadImageWithBoundingBox(AssetEntity asset, int index) async {
     final file = await asset.file;
-    return Image.file(file!, fit: BoxFit.cover);
+    if (file != null) {
+      final image = Image.file(file, fit: BoxFit.cover);
+      final faceBoxes = _faceBoxes[index] ?? [];
+
+      return Stack(
+        children: [
+          Positioned.fill(child: image),
+          ...faceBoxes.map((box) => Positioned(
+                left: box.left,
+                top: box.top,
+                width: box.width,
+                height: box.height,
+                child: Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.red, width: 2),
+                  ),
+                ),
+              )),
+        ],
+      );
+    }
+    return Center(child: Text('Error loading image'));
   }
 }
