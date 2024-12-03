@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:google_ml_kit/google_ml_kit.dart';
+import 'package:personalens/GroupImagesScreen.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:image/image.dart' as img;
@@ -19,6 +21,9 @@ class _HomePageState extends State<HomePage> {
   List<AssetEntity> _assets = [];
 
   Map<int, List<Map<String, dynamic>>> embeddingGroups = {};
+  List<Map<String, dynamic>> groupedFaces = [];
+  late StreamController<List<Map<String, dynamic>>> _facesStreamController;
+  bool isLoading = true; // Track the loading state
 
   late FaceDetector _faceDetector;
   late Interpreter _interpreter;
@@ -27,6 +32,7 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _initializeFaceDetector();
+    _facesStreamController = StreamController<List<Map<String, dynamic>>>();
     _initializeModel();
     _fetchImages();
   }
@@ -62,7 +68,7 @@ class _HomePageState extends State<HomePage> {
       List<AssetEntity> assets = await PhotoManager.getAssetPathList(
         type: RequestType.image,
       ).then((value) => value[0]
-          .getAssetListPaged(page: 0, size: 100)); // Get first 100 images
+          .getAssetListPaged(page: 0, size: 15)); // Get first 100 images
       List<AssetEntity> filteredAssets = [];
 
       for (var asset in assets) {
@@ -116,7 +122,7 @@ class _HomePageState extends State<HomePage> {
             double similarity = cosineSimilarity(entry["embedding"], embedding);
             print("Similarity with group $groupId: $similarity");
 
-            if (similarity >= 0.7) {
+            if (similarity >= 0.5) {
               // Threshold
               print(
                   "Embedding matched with group $groupId (similarity: $similarity). Adding to group.");
@@ -124,6 +130,18 @@ class _HomePageState extends State<HomePage> {
                 "embedding": embedding,
                 "imagePath": inputImage.filePath,
               });
+
+              embeddingGroups.forEach((groupId, groupImages) {
+                // Flatten the group images into the final list
+                groupedFaces.addAll(
+                    groupImages); // Add all images from the current group
+                // Add the grouped faces to the stream whenever you update the list
+                _facesStreamController.add(groupedFaces);
+                setState(() {
+                  isLoading = false;
+                });
+              });
+
               addedToGroup = true;
               break;
             }
@@ -242,6 +260,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _faceDetector.close();
+    _facesStreamController.close();
     super.dispose();
   }
 
@@ -249,34 +268,81 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('PersonaLens'),
+        title: Text('Groups'),
       ),
-      body: _assets.isEmpty
-          ? const Center(child: CircularProgressIndicator())
-          : GridView.builder(
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                crossAxisSpacing: 4.0,
-                mainAxisSpacing: 4.0,
-              ),
-              itemCount: _assets.length,
-              itemBuilder: (context, index) {
-                return FutureBuilder<Widget>(
-                  future: _loadImageWithBoundingBox(_assets[index]),
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.done) {
-                      return snapshot.data!;
-                    } else {
-                      return const Center(child: CircularProgressIndicator());
-                    }
-                  },
-                );
-              },
+      body: isLoading
+          ? const Center(
+              child:
+                  CircularProgressIndicator()) // Show loading while processing
+          : Column(
+              children: [
+                // Display avatars for each face group
+                Container(
+                  padding: const EdgeInsets.all(8.0),
+                  height: 100,
+                  child: ListView.builder(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: embeddingGroups.length,
+                    itemBuilder: (context, index) {
+                      // Get a representative face for the group (you can pick the first image from the group)
+                      var group = embeddingGroups.values.toList()[index];
+                      String imagePath = group[0]["imagePath"];
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                        child: GestureDetector(
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => GroupImagesScreen(
+                                  groupImages:
+                                      embeddingGroups.values.toList()[index],
+                                  groupId: index,
+                                ),
+                              ),
+                            );
+                          },
+                          child: CircleAvatar(
+                            radius: 30,
+                            backgroundImage: FileImage(File(imagePath)),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                // Grid of images
+                Expanded(
+                  child: GridView.builder(
+                    itemCount: _assets.length,
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 3,
+                      crossAxisSpacing: 4.0,
+                      mainAxisSpacing: 4.0,
+                    ),
+                    itemBuilder: (context, index) {
+                      return FutureBuilder<Widget>(
+                        future: _loadImage(_assets[index]),
+                        builder: (context, snapshot) {
+                          if (snapshot.connectionState ==
+                              ConnectionState.done) {
+                            return snapshot.data!;
+                          } else {
+                            return const Center(
+                                child: CircularProgressIndicator());
+                          }
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
             ),
     );
   }
 
-  Future<Widget> _loadImageWithBoundingBox(
+  Future<Widget> _loadImage(
     AssetEntity asset,
   ) async {
     final file = await asset.file;
