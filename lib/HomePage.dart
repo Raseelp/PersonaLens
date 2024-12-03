@@ -22,7 +22,7 @@ class _HomePageState extends State<HomePage> {
 
   Map<int, List<Map<String, dynamic>>> embeddingGroups = {};
   List<Map<String, dynamic>> groupedFaces = [];
-  late StreamController<List<Map<String, dynamic>>> _facesStreamController;
+
   bool isLoading = true; // Track the loading state
 
   late FaceDetector _faceDetector;
@@ -32,7 +32,6 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _initializeFaceDetector();
-    _facesStreamController = StreamController<List<Map<String, dynamic>>>();
     _initializeModel();
     _fetchImages();
   }
@@ -68,7 +67,7 @@ class _HomePageState extends State<HomePage> {
       List<AssetEntity> assets = await PhotoManager.getAssetPathList(
         type: RequestType.image,
       ).then((value) => value[0]
-          .getAssetListPaged(page: 0, size: 15)); // Get first 100 images
+          .getAssetListPaged(page: 0, size: 20)); // Get first 100 images
       List<AssetEntity> filteredAssets = [];
 
       for (var asset in assets) {
@@ -119,27 +118,25 @@ class _HomePageState extends State<HomePage> {
               "Checking similarity with group $groupId (size: ${group?.length}).");
 
           for (var entry in group ?? []) {
-            double similarity = cosineSimilarity(entry["embedding"], embedding);
-            print("Similarity with group $groupId: $similarity");
+            double cosineSim = cosineSimilarity(entry["embedding"], embedding);
+            double euclideanSim =
+                euclideanDistance(entry["embedding"], embedding);
+            double manhattanSim =
+                manhattanDistance(entry["embedding"], embedding);
 
-            if (similarity >= 0.5) {
+            print("${entry}Similarity with group $groupId: $cosineSim");
+
+            if (cosineSim >= 0.56 && euclideanSim <= 0.9 && manhattanSim <= 8) {
               // Threshold
               print(
-                  "Embedding matched with group $groupId (similarity: $similarity). Adding to group.");
+                  "Embedding matched with group $groupId (similarity: $cosineSim). Adding to group.");
               group?.add({
                 "embedding": embedding,
                 "imagePath": inputImage.filePath,
               });
 
-              embeddingGroups.forEach((groupId, groupImages) {
-                // Flatten the group images into the final list
-                groupedFaces.addAll(
-                    groupImages); // Add all images from the current group
-                // Add the grouped faces to the stream whenever you update the list
-                _facesStreamController.add(groupedFaces);
-                setState(() {
-                  isLoading = false;
-                });
+              setState(() {
+                isLoading = false;
               });
 
               addedToGroup = true;
@@ -257,10 +254,26 @@ class _HomePageState extends State<HomePage> {
     return dotProduct / (sqrt(magnitudeA) * sqrt(magnitudeB));
   }
 
+  double euclideanDistance(List<double> a, List<double> b) {
+    double sum = 0.0;
+    for (int i = 0; i < a.length; i++) {
+      sum += (a[i] - b[i]) * (a[i] - b[i]);
+    }
+    return sqrt(sum);
+  }
+
+  double manhattanDistance(List<double> a, List<double> b) {
+    double sum = 0.0;
+    for (int i = 0; i < a.length; i++) {
+      sum += (a[i] - b[i]).abs();
+    }
+    return sum;
+  }
+
   @override
   void dispose() {
     _faceDetector.close();
-    _facesStreamController.close();
+
     super.dispose();
   }
 
