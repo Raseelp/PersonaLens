@@ -33,6 +33,13 @@ class _HomePageState extends State<HomePage> {
   Future<void> _initializeModel() async {
     _interpreter = await Interpreter.fromAsset('assets/mobile_face_net.tflite');
     print('MobileFaceNet model loaded successfully');
+
+    // Get input details
+    final inputDetails = _interpreter.getInputTensors();
+    for (var i = 0; i < inputDetails.length; i++) {
+      final details = inputDetails[i];
+      print('Input $i: Type = ${details.type}, Shape = ${details.shape}');
+    }
   }
 
   void _initializeFaceDetector() {
@@ -86,7 +93,9 @@ class _HomePageState extends State<HomePage> {
     final faces = await _faceDetector.processImage(inputImage);
     if (faces.isNotEmpty) {
       final faceCrops = await _extractFaceCrops(inputImage, faces);
-      return Future.wait(faceCrops.map((crop) => _generateEmbedding(crop)));
+      return Future.wait(
+        faceCrops.map((crop) => _generateEmbedding(crop)),
+      );
     }
     return [];
   }
@@ -125,10 +134,11 @@ class _HomePageState extends State<HomePage> {
     final input = _preprocessFace(faceCrop);
     final output = List.filled(192, 0).reshape([1, 192]);
     _interpreter.run(input, output);
+    print("Generated Embedding: $output");
     return output[0];
   }
 
-  List<List<double>> _preprocessFace(Uint8List faceCrop) {
+  List<List<List<List<double>>>> _preprocessFace(Uint8List faceCrop) {
     final image = img.decodeImage(faceCrop)!;
     final resizedImage = img.copyResize(image, width: 112, height: 112);
     // Convert the resized image to grayscale
@@ -136,9 +146,23 @@ class _HomePageState extends State<HomePage> {
 
     // Normalize the image by scaling pixel values to [0, 1]
     final normalizedImage = grayscaleImage.getBytes();
+
     final input = List.generate(
-      1,
-      (_) => normalizedImage.map((e) => e / 255.0).toList(),
+      1, // Batch size
+      (_) => List.generate(
+        112, // Height
+        (y) => List.generate(
+          112, // Width
+          (x) => [
+            normalizedImage[(x + y * 112) * 3] / 255.0, // Red channel
+            normalizedImage[(x + y * 112) * 3 + 1] / 255.0, // Green channel
+            normalizedImage[(x + y * 112) * 3 + 2] / 255.0, // Blue channel
+          ],
+          growable: false,
+        ),
+        growable: false,
+      ),
+      growable: false,
     );
     return input;
   }
