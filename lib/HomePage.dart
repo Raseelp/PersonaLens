@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:google_ml_kit/google_ml_kit.dart';
@@ -16,8 +17,8 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   List<AssetEntity> _assets = [];
-  Map<int, List<Rect>> _faceBoxes =
-      {}; // To store bounding boxes for each image
+
+  Map<int, List<Map<String, dynamic>>> embeddingGroups = {};
 
   late FaceDetector _faceDetector;
   late Interpreter _interpreter;
@@ -78,6 +79,7 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _assets = filteredAssets; // Update state with filtered assets
       });
+      _printEmbeddingGroups();
 
       print("Filtered assets with faces: ${filteredAssets.length}");
     } else {
@@ -93,11 +95,61 @@ class _HomePageState extends State<HomePage> {
     final faces = await _faceDetector.processImage(inputImage);
     if (faces.isNotEmpty) {
       final faceCrops = await _extractFaceCrops(inputImage, faces);
-      return Future.wait(
-        faceCrops.map((crop) => _generateEmbedding(crop)),
+      // Generate embeddings for all face crops
+      final embeddings = await Future.wait(
+        faceCrops.map((crop) async {
+          print("Processing face crop...");
+          final embedding = await _generateEmbedding(crop);
+          print("Generated embedding: $embedding");
+          return embedding;
+        }),
       );
+      for (var embedding in embeddings) {
+        bool addedToGroup = false;
+
+        for (var groupId in embeddingGroups.keys) {
+          final group = embeddingGroups[groupId];
+          print(
+              "Checking similarity with group $groupId (size: ${group?.length}).");
+
+          for (var entry in group ?? []) {
+            double similarity = cosineSimilarity(entry["embedding"], embedding);
+            print("Similarity with group $groupId: $similarity");
+
+            if (similarity >= 0.7) {
+              // Threshold
+              print(
+                  "Embedding matched with group $groupId (similarity: $similarity). Adding to group.");
+              group?.add({
+                "embedding": embedding,
+                "imagePath": inputImage.filePath,
+              });
+              addedToGroup = true;
+              break;
+            }
+          }
+
+          if (addedToGroup) break;
+        }
+
+        // If no group matches, create a new one
+        if (!addedToGroup) {
+          int newGroupId = embeddingGroups.length; // Unique ID
+          print("No matching group found. Creating new group $newGroupId.");
+          embeddingGroups[newGroupId] = [
+            {
+              "embedding": embedding,
+              "imagePath": inputImage.filePath,
+            }
+          ];
+        }
+      }
+
+      return embeddings; // Return the embeddings if needed elsewhere
+    } else {
+      print("No faces detected in the image.");
+      return [];
     }
-    return [];
   }
 
   Future<List<Uint8List>> _extractFaceCrops(
@@ -175,6 +227,18 @@ class _HomePageState extends State<HomePage> {
     return null;
   }
 
+  double cosineSimilarity(List<double> a, List<double> b) {
+    double dotProduct = 0.0;
+    double magnitudeA = 0.0;
+    double magnitudeB = 0.0;
+    for (int i = 0; i < a.length; i++) {
+      dotProduct += a[i] * b[i];
+      magnitudeA += a[i] * a[i];
+      magnitudeB += b[i] * b[i];
+    }
+    return dotProduct / (sqrt(magnitudeA) * sqrt(magnitudeB));
+  }
+
   @override
   void dispose() {
     _faceDetector.close();
@@ -198,7 +262,7 @@ class _HomePageState extends State<HomePage> {
               itemCount: _assets.length,
               itemBuilder: (context, index) {
                 return FutureBuilder<Widget>(
-                  future: _loadImageWithBoundingBox(_assets[index], index),
+                  future: _loadImageWithBoundingBox(_assets[index]),
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.done) {
                       return snapshot.data!;
@@ -212,29 +276,27 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Future<Widget> _loadImageWithBoundingBox(AssetEntity asset, int index) async {
+  Future<Widget> _loadImageWithBoundingBox(
+    AssetEntity asset,
+  ) async {
     final file = await asset.file;
     if (file != null) {
       final image = Image.file(file, fit: BoxFit.cover);
-      final faceBoxes = _faceBoxes[index] ?? [];
 
-      return Stack(
-        children: [
-          Positioned.fill(child: image),
-          ...faceBoxes.map((box) => Positioned(
-                left: box.left,
-                top: box.top,
-                width: box.width,
-                height: box.height,
-                child: Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(color: Colors.red, width: 2),
-                  ),
-                ),
-              )),
-        ],
-      );
+      return image;
     }
     return Center(child: Text('Error loading image'));
+  }
+
+  void _printEmbeddingGroups() {
+    print("=== Final Embedding Groups ===");
+    embeddingGroups.forEach((groupId, group) {
+      print("Group $groupId:");
+      for (var entry in group) {
+        print("  - Embedding: ${entry["embedding"]}");
+        print("  - Image Path: ${entry["imagePath"]}");
+      }
+    });
+    print("==============================");
   }
 }
