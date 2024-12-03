@@ -1,7 +1,11 @@
+import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:google_ml_kit/google_ml_kit.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:photo_manager/photo_manager.dart';
+import 'package:tflite_flutter/tflite_flutter.dart';
+import 'package:image/image.dart' as img;
+import 'package:flutter/services.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -16,12 +20,19 @@ class _HomePageState extends State<HomePage> {
       {}; // To store bounding boxes for each image
 
   late FaceDetector _faceDetector;
+  late Interpreter _interpreter;
 
   @override
   void initState() {
     super.initState();
     _initializeFaceDetector();
+    _initializeModel();
     _fetchImages();
+  }
+
+  Future<void> _initializeModel() async {
+    _interpreter = await Interpreter.fromAsset('assets/mobile_face_net.tflite');
+    print('MobileFaceNet model loaded successfully');
   }
 
   void _initializeFaceDetector() {
@@ -49,9 +60,10 @@ class _HomePageState extends State<HomePage> {
       for (var asset in assets) {
         final inputImage = await _convertToInputImage(asset);
         if (inputImage != null) {
-          final faces = await _detectFaces(inputImage);
-          if (faces.isNotEmpty) {
-            filteredAssets.add(asset); // Add asset only if faces are detected
+          final embeddings =
+              await _detectFacesAndGenerateEmbeddings(inputImage);
+          if (embeddings.isNotEmpty) {
+            filteredAssets.add(asset); // Add asset only if embeddings exist
           }
         }
       }
@@ -69,21 +81,74 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<List<List<double>>> _detectFacesAndGenerateEmbeddings(
+      InputImage inputImage) async {
+    final faces = await _faceDetector.processImage(inputImage);
+    if (faces.isNotEmpty) {
+      final faceCrops = await _extractFaceCrops(inputImage, faces);
+      return Future.wait(faceCrops.map((crop) => _generateEmbedding(crop)));
+    }
+    return [];
+  }
+
+  Future<List<Uint8List>> _extractFaceCrops(
+      InputImage inputImage, List<Face> faces) async {
+    final imageFile = inputImage.filePath;
+    if (imageFile == null) return [];
+    final file = File(imageFile);
+    final imageBytes = await file.readAsBytes();
+    final image = img.decodeImage(imageBytes);
+
+    if (image == null) {
+      print("Failed to decode the image.");
+      return []; // Return empty list if decoding fails
+    }
+    List<Uint8List> faceCrops = [];
+
+    for (var face in faces) {
+      final boundingBox = face.boundingBox;
+      final cropped = img.copyCrop(
+        image,
+        x: boundingBox.left.toInt(), // x-coordinate of the top-left corner
+        y: boundingBox.top.toInt(), // y-coordinate of the top-left corner
+        width: boundingBox.width.toInt(), // width of the cropped area
+        height: boundingBox.height.toInt(), // height of the cropped area
+      );
+      faceCrops.add(Uint8List.fromList(img.encodeJpg(cropped)));
+    }
+    return faceCrops;
+  }
+
+  //Actually genarate embeddings using MobileFaceNet
+
+  Future<List<double>> _generateEmbedding(Uint8List faceCrop) async {
+    final input = _preprocessFace(faceCrop);
+    final output = List.filled(192, 0).reshape([1, 192]);
+    _interpreter.run(input, output);
+    return output[0];
+  }
+
+  List<List<double>> _preprocessFace(Uint8List faceCrop) {
+    final image = img.decodeImage(faceCrop)!;
+    final resizedImage = img.copyResize(image, width: 112, height: 112);
+    // Convert the resized image to grayscale
+    final grayscaleImage = img.grayscale(resizedImage); // Converts to grayscale
+
+    // Normalize the image by scaling pixel values to [0, 1]
+    final normalizedImage = grayscaleImage.getBytes();
+    final input = List.generate(
+      1,
+      (_) => normalizedImage.map((e) => e / 255.0).toList(),
+    );
+    return input;
+  }
+
   Future<InputImage?> _convertToInputImage(AssetEntity asset) async {
     final file = await asset.file;
     if (file != null) {
       return InputImage.fromFilePath(file.path);
     }
     return null;
-  }
-
-  Future<List<Face>> _detectFaces(InputImage inputImage) async {
-    try {
-      return await _faceDetector.processImage(inputImage);
-    } catch (e) {
-      print("Error detecting faces: $e");
-      return [];
-    }
   }
 
   @override
