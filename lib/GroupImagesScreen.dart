@@ -15,7 +15,7 @@ class GroupImagesScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Group $groupId Images'),
+        title: Text('Person\'s $groupId Images'),
       ),
       body: GridView.builder(
         padding: const EdgeInsets.all(8),
